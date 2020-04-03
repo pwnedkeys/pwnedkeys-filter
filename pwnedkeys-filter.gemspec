@@ -29,7 +29,6 @@ Gem::Specification.new do |s|
   s.add_development_dependency 'github-release'
   s.add_development_dependency 'git-version-bump'
   s.add_development_dependency 'guard-rspec'
-  s.add_development_dependency 'rack-test'
   s.add_development_dependency 'rake', "~> 12.0"
   s.add_development_dependency 'redcarpet'
   s.add_development_dependency 'rspec'
