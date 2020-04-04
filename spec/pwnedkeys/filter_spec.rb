@@ -75,6 +75,14 @@ describe Pwnedkeys::Filter do
     end
   end
 
+  describe ".filter_parameters" do
+    it "returns expected results" do
+      expect(Pwnedkeys::Filter.filter_parameters(entries: 42, fp_rate: 0.1)).to eq(hash_count: 2, hash_length: 8)
+      expect(Pwnedkeys::Filter.filter_parameters(entries: 1000, fp_rate: 0.01)).to eq(hash_count: 3, hash_length: 14)
+      expect(Pwnedkeys::Filter.filter_parameters(entries: 1_200_000, fp_rate: 0.01)).to eq(hash_count: 3, hash_length: 24)
+    end
+  end
+
   describe ".open" do
     context "with an existent and ordinary data file" do
       let(:datafile) { "2_4_1" }

@@ -117,6 +117,53 @@ module Pwnedkeys
       nil
     end
 
+    # Calculate count/length parameters for a given entry count and desired false-positive rate.
+    #
+    # @param entries [Integer] how many elements the bloom filter should
+    #    accommodate.
+    #
+    # @param fp_rate [Float] the maximum false-positive rate you wish to
+    #    accept.
+    #
+    # @return [Hash<Symbol, Integer>] the `:hash_count` and `:hash_length` which
+    #    will produce the desired false-positive rate if the filter is filled
+    #    with the specified number of entries.
+    #
+    def self.filter_parameters(entries:, fp_rate:)
+      # Blessings unto https://en.wikipedia.org/wiki/Bloom_filter#Optimal_number_of_hash_functions
+      optimal_filter_bits = (-1 * entries * Math.log(fp_rate) / Math.log(2) / Math.log(2))
+      hash_length = (Math.log2(optimal_filter_bits)).ceil
+      actual_filter_bits = 2 ** hash_length
+
+      # We could, in theory, just use the "optimal k" (hash count), which would
+      # often produce an actual false-positive rate much smaller than our
+      # target (because actual_filter_bits can be *significantly* larger than
+      # optimal_filter_bits).  Instead, to minimise the hashing required, we
+      # can use the extra filter length available to choose a smaller k that
+      # still satisfies the target false positive rate.
+      #
+      # Because my algebra isn't up to solving the FP rate equation for k, and
+      # because the search space of possible values of k is small and bounded
+      # (by 1, and by the "optimal k" on the upper bound), brute-forcing things
+      # seems the easiest option.
+
+      upper_bound = (Math.log(2) * actual_filter_bits / entries).ceil
+      hash_count = (1..upper_bound).find do |k|
+        (1 - (1 - 1.0 / actual_filter_bits) ** (k * entries)) ** k < fp_rate
+      end
+
+      if hash_count.nil?
+        #:nocov:
+        raise RuntimeError, "CAN'T HAPPEN: Could not determine hash_count for entries: #{entries}, fp_rate: #{fp_rate}.  Please report a violation of the laws of mathematics."
+        #:nocov:
+      end
+
+      {
+        hash_count:  hash_count,
+        hash_length: hash_length,
+      }
+    end
+
     # Open an existing pwnedkeys bloom filter data file.
     #
     # @param filename [String] the file to open.
@@ -244,7 +291,6 @@ module Pwnedkeys
       # Taken wholesale from https://en.wikipedia.org/wiki/Bloom_filter#Probability_of_false_positives
       (1 - (1 - 1.0 / filter_bit_count) ** (hash_count * entry_count)) ** hash_count
     end
-
 
     private
 
