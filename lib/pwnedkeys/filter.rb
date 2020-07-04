@@ -182,7 +182,11 @@ module Pwnedkeys
       filter = Pwnedkeys::Filter.new(filename)
 
       if block_given?
-        yield filter
+        begin
+          yield filter
+        ensure
+          filter.close
+        end
       else
         filter
       end
@@ -242,28 +246,34 @@ module Pwnedkeys
 
       spki = spkify(key)
 
-      filter_positions(spki.to_der).each do |n|
-        @fd.seek(n / 8 + @header.header_size, :SET)
-        byte = @fd.read(1).ord
-        @fd.seek(-1, :CUR)
+      begin
+        @fd.flock(File::LOCK_EX)
+        filter_positions(spki.to_der).each do |n|
+          @fd.seek(n / 8 + @header.header_size, :SET)
+          byte = @fd.read(1).ord
+          @fd.seek(-1, :CUR)
 
-        mask = 2 ** (7 - (n % 8))
-        new_byte = byte | mask
+          mask = 2 ** (7 - (n % 8))
+          new_byte = byte | mask
 
-        @fd.write(new_byte.chr)
+          @fd.write(new_byte.chr)
+        end
+
+        @header.entry_added!
+
+        # Only update the revision if this is the first add in this filter,
+        # because otherwise the revision counter would just be the same as the
+        # entry counter, and that would be pointless.
+        unless @already_modified
+          @header.update!
+        end
+
+        @fd.seek(0)
+        @fd.write(@header.to_s)
+        @fd.fdatasync
+      ensure
+        @fd.flock(File::LOCK_UN)
       end
-
-      @header.entry_added!
-
-      # Only update the revision if this is the first add in this filter,
-      # because otherwise the revision counter would just be the same as the
-      # entry counter, and that would be pointless.
-      unless @already_modified
-        @header.update!
-      end
-
-      @fd.seek(0)
-      @fd.write(@header.to_s)
 
       @already_modified = true
     end
@@ -333,12 +343,17 @@ module Pwnedkeys
     end
 
     def filter_bits(s)
-      filter_positions(s).map do |n|
-        @fd.seek(n / 8 + @header.header_size, :SET)
-        byte = @fd.read(1).ord
-        mask = 2 ** (7 - (n % 8))
+      begin
+        @fd.flock(File::LOCK_SH)
+        filter_positions(s).map do |n|
+          @fd.seek(n / 8 + @header.header_size, :SET)
+          byte = @fd.read(1).ord
+          mask = 2 ** (7 - (n % 8))
 
-        (byte & mask) > 0
+          (byte & mask) > 0
+        end
+      ensure
+        @fd.flock(File::LOCK_UN)
       end
     end
 
