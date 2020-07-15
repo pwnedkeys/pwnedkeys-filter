@@ -232,4 +232,13 @@ describe Pwnedkeys::Filter do
       expect(filter.false_positive_rate).to be_within(0.001).of(0.01466)
     end
   end
+
+  describe "#sync" do
+    it "forces a sync to disk" do
+      Pwnedkeys::Filter.create(testfile, hash_count: 2, hash_length: 4)
+      expect(filter.instance_variable_get(:@fd)).to receive(:fdatasync)
+
+      filter.sync
+    end
+  end
 end

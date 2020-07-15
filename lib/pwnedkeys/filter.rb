@@ -17,7 +17,8 @@ module Pwnedkeys
     class FilterClosedError < Error; end
 
     class Header
-      attr_reader :signature, :revision, :update_time, :entry_count, :hash_count, :hash_length
+      attr_reader :signature, :update_time, :entry_count, :hash_count, :hash_length
+      attr_accessor :revision
 
       def self.from_fd(fd)
         fd.seek(0)
@@ -44,13 +45,14 @@ module Pwnedkeys
         to_s.length
       end
 
-      def update!
-        @revision += 1
-      end
-
       def entry_added!
         @update_time = Time.now
         @entry_count += 1
+      end
+
+      def to_fd(fd)
+        fd.rewind
+        fd.write(self.to_s)
       end
     end
     private_constant :Header
@@ -168,6 +170,12 @@ module Pwnedkeys
     #
     # @param filename [String] the file to open.
     #
+    # @param sync [Boolean] whether or not to sync the data to persistent storage
+    #    after each call to `#add`.  Turning this off can improve bulk addition
+    #    performance, at the cost of potential data loss in the event of catastrophe.
+    #
+    # @param revision [Integer] set an explicit revision number for changes.
+    #
     # @raise [SystemCallError] if anything low-level goes wrong, you will get some
     #    sort of `Errno`-related exception raised, such as `ENOENT` (the file you
     #    specified does not exist) or `EPERM` (you don't have access to the file
@@ -178,8 +186,8 @@ module Pwnedkeys
     #
     # @return [Pwnedkeys::Filter]
     #
-    def self.open(filename)
-      filter = Pwnedkeys::Filter.new(filename)
+    def self.open(filename, sync: true, revision: nil)
+      filter = Pwnedkeys::Filter.new(filename, sync: sync, revision: revision)
 
       if block_given?
         begin
@@ -198,9 +206,11 @@ module Pwnedkeys
     #
     # @see .open
     #
-    def initialize(filename)
-      @fd     = File.open(filename, File::RDWR, binmode: true)
-      @header = Header.from_fd(@fd)
+    def initialize(filename, sync: true, revision: nil)
+      @fd = File.open(filename, File::RDWR, binmode: true)
+      refresh_header
+
+      @sync, @revision = sync, revision
     end
 
     # Query the bloom filter.
@@ -233,8 +243,8 @@ module Pwnedkeys
     #    probabilistic nature of the bloom filter structure, it is possible to
     #    add two completely different keys and yet it looks like the "same"
     #    key to the bloom filter.  Adding two colliding keys isn't a fatal
-    #    error, but it is a hint that perhaps the existing filter is getting
-    #    a little too full.
+    #    error, but if it starts to happen regularly, it is a hint that perhaps
+    #    the existing filter is getting a little too full.
     #
     # @raise [Pwnedkeys::Filter::FilterClosedError] if you try to add a key
     #    to a filter object which has had {#close} called on it.
@@ -248,6 +258,7 @@ module Pwnedkeys
 
       begin
         @fd.flock(File::LOCK_EX)
+        refresh_header
         filter_positions(spki.to_der).each do |n|
           @fd.seek(n / 8 + @header.header_size, :SET)
           byte = @fd.read(1).ord
@@ -259,23 +270,28 @@ module Pwnedkeys
           @fd.write(new_byte.chr)
         end
 
+        @revision ||= @header.revision + 1
+
+        @header.revision = @revision
         @header.entry_added!
 
-        # Only update the revision if this is the first add in this filter,
-        # because otherwise the revision counter would just be the same as the
-        # entry counter, and that would be pointless.
-        unless @already_modified
-          @header.update!
-        end
-
-        @fd.seek(0)
-        @fd.write(@header.to_s)
-        @fd.fdatasync
+        @header.to_fd(@fd)
+        @fd.fdatasync if @sync
       ensure
         @fd.flock(File::LOCK_UN)
       end
 
       @already_modified = true
+    end
+
+    # Force a sync of newly-added data to disk.
+    #
+    # This method is only of interest if the filter was opened with `sync:
+    # false`, because otherwise data will already have been synced to disk as
+    # part of the call to {#add}.
+    #
+    def sync
+      @fd.fdatasync if @fd
     end
 
     # Signal that the filter should be closed for further querying and manipulation.
@@ -303,6 +319,10 @@ module Pwnedkeys
     end
 
     private
+
+    def refresh_header
+      @header = Header.from_fd(@fd)
+    end
 
     def hash_count
       @header.hash_count
